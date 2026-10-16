@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0f17">
+<title>SariAN — Media Tools</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0f17;--panel:#151c29;--line:#2b3548;--text:#f4f6fb;--muted:#aab4c7;--accent:#ff9b45;--blue:#6da9ff}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#1a2638 0,#0b0f17 55%);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+main{width:min(880px,100%);margin:auto;padding:28px 16px 60px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.logo{display:grid;place-items:center;width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,var(--accent),#ffce80);color:#17202d;font-weight:900;font-size:24px}.brand h1{margin:0;font-size:28px;letter-spacing:.3px}.brand p{margin:0;color:var(--muted);font-size:13px}.hero,.card,.notice{border:1px solid var(--line);border-radius:24px;background:rgba(21,28,41,.94);padding:22px;margin-bottom:16px}.hero h2{font-size:25px;margin:0 0 8px}.muted{color:var(--muted)}label{display:block;font-weight:700;margin:16px 0 7px}input,select,textarea{width:100%;padding:14px;border:1px solid #3a465c;border-radius:13px;background:#0d1320;color:var(--text);font:inherit}button,.button{border:0;border-radius:13px;padding:13px 16px;background:var(--accent);color:#171b22;font:700 15px system-ui;cursor:pointer;text-decoration:none;display:inline-block}button.secondary{background:#263247;color:var(--text);border:1px solid #3a465c}.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.row button{flex:1}.notice{background:#2a2119;border-color:#6d5134;color:#f5d2a5}.notice strong{color:#ffcb8a}.status{margin-top:12px;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.tile{border:1px solid var(--line);border-radius:17px;padding:17px;background:#101724}.tile h3{margin:0 0 6px}.small{font-size:13px;color:var(--muted)}footer{text-align:center;color:var(--muted);font-size:12px;padding:12px}
+</style>
+</head>
+<body><main>
+<header class="brand"><div class="logo">S</div><div><h1>SariAN</h1><p>Media tools sederhana • Indonesia</p></div></header>
+<section class="hero">
+<h2>Unduh media dari tautan langsung</h2>
+<p class="muted">Tempel URL file media langsung yang memang boleh kamu unduh. Tautan halaman platform belum otomatis bisa diproses.</p>
+<form id="downloadForm">
+<label for="url">URL media</label>
+<input id="url" type="url" placeholder="https://contoh.com/video.mp4" required>
+<div class="row"><button type="submit">Periksa tautan</button><button class="secondary" type="button" id="clear">Bersihkan</button></div>
+</form><div id="status" class="status" role="status"></div>
+</section>
+<section class="notice"><strong>Catatan penting:</strong> SariAN versi awal ini hanya mendukung URL file media langsung (misalnya file .mp4 atau .mp3) yang dapat diakses publik. Belum mengunduh dari halaman YouTube, TikTok, Instagram, atau Facebook; tidak melewati DRM, login, atau pembatasan akses.</section>
+<section class="card"><h2>Alat teks subtitle</h2><p class="muted">Ubah teks menjadi file TXT atau SRT sederhana. Waktu SRT adalah perkiraan, bukan sinkronisasi otomatis.</p>
+<label for="subtitle">Teks subtitle (satu kalimat per baris)</label><textarea id="subtitle" rows="5" placeholder="Masukkan teks di sini..."></textarea>
+<div class="row"><button id="txt" type="button">Simpan TXT</button><button id="srt" type="button" class="secondary">Simpan SRT</button></div>
+</section>
+<section class="card"><h2>Fitur berikutnya</h2><div class="grid">
+<div class="tile"><h3>🖼️ Thumbnail</h3><p class="small">Dapat ditambahkan untuk sumber yang menyediakan thumbnail publik.</p></div>
+<div class="tile"><h3>🎞️ Konversi media</h3><p class="small">Konversi video/audio memerlukan dukungan codec dan sumber file yang dapat diakses.</p></div>
+<div class="tile"><h3>⭐ Premium</h3><p class="small">Login, pembayaran, koin, dan iklan belum terpasang.</p></div>
+</div></section>
+<footer>SariAN • Gunakan hanya untuk media milikmu atau yang penggunaannya diizinkan.</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+$('downloadForm').addEventListener('submit',async e=>{
+ e.preventDefault(); const status=$('status'); status.textContent='Memeriksa tautan...';
+ try{
+  const r=await fetch('/api/direct-download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value.trim()})});
+  const data=await r.json();
+  if(!r.ok) throw new Error(data.error||'Tautan tidak bisa dipakai.');
+  status.innerHTML='';
+  const a=document.createElement('a');a.href=data.downloadUrl;a.textContent='Buka / unduh file media';a.className='button';a.target='_blank';a.rel='noopener';status.appendChild(a);
+ }catch(err){status.textContent=err.message;}
+});
+$('clear').onclick=()=>{$('url').value='';$('status').textContent='';};
+function save(name,text,type){const blob=new Blob([text],{type});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href);}
+$('txt').onclick=()=>save('subtitle.txt',$('subtitle').value,'text/plain;charset=utf-8');
+$('srt').onclick=()=>{const lines=$('subtitle').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);const s=lines.map((t,i)=>{const start=i*3,end=start+3;const ts=n=>{const h=String(Math.floor(n/3600)).padStart(2,'0'),m=String(Math.floor(n%3600/60)).padStart(2,'0'),sec=String(n%60).padStart(2,'0');return `${h}:${m}:${sec},000`};return `${i+1}\n${ts(start)} --> ${ts(end)}\n${t}`}).join('\n\n');save('subtitle.srt',s,'text/plain;charset=utf-8');};
+</script></body></html>
