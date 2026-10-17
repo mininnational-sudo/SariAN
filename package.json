@@ -2,15 +2,17 @@
   "name": "sarian-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Backend API starter for SariAN media downloader",
+  "description": "Backend API for SariAN",
   "main": "server.js",
   "scripts": {
+    "postinstall": "node -e \"const { execSync } = require('child_process'); try { execSync('curl -fL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp && chmod +x yt-dlp', { stdio: 'inherit' }); } catch(e) { console.error('Gagal unduh yt-dlp:', e.message); process.exit(1); }\"",
     "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "express": "^4.21.2",
     "helmet": "^8.0.0"
   }
