@@ -1,6 +1,6 @@
 const express = require("express");
 const helmet = require("helmet");
-const { spawn } = require("node:child_process");
+const { spawn, execSync } = require("node:child_process");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
@@ -10,7 +10,7 @@ const dns = require("node:dns").promises;
 const { URL } = require("node:url");
 
 const app = express();
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "32kb" }));
 
 const PORT = Number(process.env.PORT || 3000);
@@ -31,7 +31,6 @@ const ALLOWED_HOSTS = [
 
 function hostAllowed(host) {
   host = host.toLowerCase().replace(/\.$/, "");
-
   return ALLOWED_HOSTS.some(
     domain => host === domain || host.endsWith("." + domain)
   );
@@ -43,7 +42,9 @@ function isPrivateIPv4(ip) {
   if (
     p.length !== 4 ||
     p.some(n => !Number.isInteger(n) || n < 0 || n > 255)
-  ) return true;
+  ) {
+    return true;
+  }
 
   return (
     p[0] === 10 ||
@@ -71,13 +72,15 @@ async function validateUrl(value) {
   }
 
   if (u.username || u.password) {
-    throw new Error("Tautan dengan username atau password ditolak.");
+    throw new Error("Tautan dengan kredensial ditolak.");
   }
 
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
 
   if (!hostAllowed(host)) {
-    throw new Error("Platform ini belum didukung.");
+    throw new Error(
+      "Platform ini belum didukung atau format link salah."
+    );
   }
 
   if (
@@ -88,32 +91,24 @@ async function validateUrl(value) {
     throw new Error("Alamat lokal tidak diizinkan.");
   }
 
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) && isPrivateIPv4(host)) {
-    throw new Error("Alamat IP privat tidak diizinkan.");
-  }
-
-  if (host.includes(":")) {
-    throw new Error("Alamat IP langsung tidak didukung.");
-  }
-
   try {
     const records = await dns.lookup(host, { all: true });
 
-    if (records.some(record =>
-      record.family === 4
-        ? isPrivateIPv4(record.address)
-        : record.address === "::1" ||
-          record.address === "::" ||
-          /^(fc|fd|fe80:)/i.test(record.address)
-    )) {
+    if (
+      records.some(record =>
+        record.family === 4
+          ? isPrivateIPv4(record.address)
+          : record.address === "::1" ||
+            record.address === "::" ||
+            /^(fc|fd|fe80:)/i.test(record.address)
+      )
+    ) {
       throw new Error("Alamat jaringan privat ditolak.");
     }
   } catch (error) {
     if (error.message.includes("ditolak")) throw error;
 
-    throw new Error(
-      "Domain tidak dapat diperiksa dari server. Coba lagi nanti."
-    );
+    console.warn("DNS check bypass/warning:", error.message);
   }
 
   return u;
@@ -121,7 +116,10 @@ async function validateUrl(value) {
 
 function runDownload(url, directory) {
   return new Promise((resolve, reject) => {
-    const outputTemplate = path.join(directory, "sarian.%(ext)s");
+    const outputTemplate = path.join(
+      directory,
+      "sarian.%(ext)s"
+    );
 
     const args = [
       "--no-warnings",
@@ -151,6 +149,7 @@ function runDownload(url, directory) {
 
     function finish(error, file) {
       if (settled) return;
+
       settled = true;
       clearTimeout(timer);
 
@@ -168,46 +167,62 @@ function runDownload(url, directory) {
 
     child.on("error", error => {
       if (error.code === "ENOENT") {
-        finish(new Error(
-          "yt-dlp tidak tersedia. Server harus menjalankan lingkungan yang memasang yt-dlp dan FFmpeg."
-        ));
+        finish(
+          new Error(
+            "ENGINE_NOT_FOUND: yt-dlp tidak terpasang di runtime server."
+          )
+        );
       } else {
-        finish(new Error("Mesin download gagal dijalankan."));
+        finish(
+          new Error(
+            "Gagal mengeksekusi downloader: " + error.message
+          )
+        );
       }
     });
 
     child.on("close", async code => {
       if (timedOut) {
-        return finish(new Error(
-          "Waktu download habis. Coba video yang lebih pendek."
-        ));
+        return finish(
+          new Error("Waktu download habis (timeout server).")
+        );
       }
 
       if (code !== 0) {
+        console.error("yt-dlp stderr:", stderr);
+
         const detail = stderr.toLowerCase();
 
         if (
           detail.includes("ffmpeg") &&
-          (detail.includes("not found") || detail.includes("not installed"))
+          (
+            detail.includes("not found") ||
+            detail.includes("not installed")
+          )
         ) {
-          return finish(new Error(
-            "FFmpeg belum tersedia pada server."
-          ));
+          return finish(
+            new Error("FFmpeg belum terpasang di sistem container.")
+          );
         }
 
         if (
           detail.includes("sign in") ||
           detail.includes("login") ||
-          detail.includes("private")
+          detail.includes("confirm you're not a bot")
         ) {
-          return finish(new Error(
-            "Video privat atau memerlukan login. Video seperti ini tidak dapat diproses."
-          ));
+          return finish(
+            new Error(
+              "Video dibatasi login/bot-protection oleh platform."
+            )
+          );
         }
 
-        return finish(new Error(
-          "Download gagal. Periksa log server untuk mengetahui penyebabnya."
-        ));
+        return finish(
+          new Error(
+            "Ekstraksi gagal: " +
+            (stderr.split("\n")[0] || "Error tidak diketahui")
+          )
+        );
       }
 
       try {
@@ -229,21 +244,66 @@ function runDownload(url, directory) {
         }
 
         if (!selected) {
-          return finish(new Error(
-            "Server selesai memproses, tetapi file video tidak ditemukan."
-          ));
+          return finish(
+            new Error(
+              "Proses selesai tetapi file video kosong/tidak ditemukan."
+            )
+          );
         }
 
         finish(null, selected);
-      } catch {
-        finish(new Error("Hasil download tidak dapat dibaca."));
+      } catch (err) {
+        finish(
+          new Error(
+            "Gagal membaca direktori unduhan: " + err.message
+          )
+        );
       }
     });
   });
 }
 
+// Endpoint pemeriksaan yt-dlp dan FFmpeg
+app.get("/api/check-tools", (_req, res) => {
+  let ytdlpOk = false;
+  let ffmpegOk = false;
+
+  try {
+    execSync("yt-dlp --version");
+    ytdlpOk = true;
+  } catch {}
+
+  try {
+    execSync("ffmpeg -version");
+    ffmpegOk = true;
+  } catch {}
+
+  res.json({
+    ok: ytdlpOk && ffmpegOk,
+    tools: {
+      "yt-dlp": ytdlpOk
+        ? "TERPASANG"
+        : "TIDAK TERPASANG",
+      "ffmpeg": ffmpegOk
+        ? "TERPASANG"
+        : "TIDAK TERPASANG"
+    },
+    message: (!ytdlpOk || !ffmpegOk)
+      ? "Hosting kamu masih jalan di Node standar (mengabaikan Dockerfile)."
+      : "Lingkungan server siap digunakan!"
+  });
+});
+
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+  const indexPath = path.join(__dirname, "index.html");
+
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.send(
+      "Backend SariAN aktif. Gunakan POST /api/download"
+    );
+  }
 });
 
 app.get("/health", (_req, res) => {
@@ -274,7 +334,7 @@ app.post("/api/download", async (req, res) => {
 
     await fsp.mkdir(directory, { recursive: true });
 
-    console.log("Download dimulai:", url.hostname);
+    console.log("Download request:", url.hostname);
 
     const file = await runDownload(url.toString(), directory);
 
@@ -289,26 +349,23 @@ app.post("/api/download", async (req, res) => {
         : "application/octet-stream"
     );
 
-    res.setHeader(
-      "Content-Length",
-      String(stat.size)
-    );
+    res.setHeader("Content-Length", String(stat.size));
 
     res.setHeader(
       "Content-Disposition",
       'attachment; filename="sarian-video' +
-      path.extname(file) +
-      '"'
+        path.extname(file) +
+        '"'
     );
 
     const stream = fs.createReadStream(file);
 
     stream.on("error", error => {
-      console.error("Kesalahan membaca file:", error.message);
+      console.error("Kesalahan stream:", error.message);
 
       if (!res.headersSent) {
         res.status(500).json({
-          error: "File hasil download gagal dikirim."
+          error: "Gagal mengalirkan file hasil download."
         });
       } else {
         res.destroy();
@@ -317,23 +374,21 @@ app.post("/api/download", async (req, res) => {
 
     stream.on("close", async () => {
       if (directory) {
-        await fsp.rm(directory, {
-          recursive: true,
-          force: true
-        }).catch(() => {});
+        await fsp.rm(
+          directory,
+          { recursive: true, force: true }
+        ).catch(() => {});
       }
     });
 
     res.on("close", () => {
-      if (!res.writableEnded) {
-        stream.destroy();
-      }
+      if (!res.writableEnded) stream.destroy();
     });
 
     stream.pipe(res);
 
   } catch (error) {
-    console.error("Download gagal:", error.message);
+    console.error("Download error:", error.message);
 
     if (!res.headersSent && !res.destroyed) {
       res.status(400).json({
@@ -342,16 +397,16 @@ app.post("/api/download", async (req, res) => {
     }
 
     if (directory) {
-      await fsp.rm(directory, {
-        recursive: true,
-        force: true
-      }).catch(() => {});
+      await fsp.rm(
+        directory,
+        { recursive: true, force: true }
+      ).catch(() => {});
     }
   }
 });
 
 app.use((error, _req, res, _next) => {
-  console.error("Kesalahan server:", error.message);
+  console.error("Server error:", error.message);
 
   if (!res.headersSent) {
     res.status(500).json({
@@ -361,5 +416,5 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("SariAN backend listening on " + PORT);
+  console.log("SariAN backend running on port " + PORT);
 });
