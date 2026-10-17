@@ -1,12 +1,11 @@
 const express = require("express");
 const helmet = require("helmet");
-const { spawn, execSync } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const dns = require("node:dns").promises;
 const { URL } = require("node:url");
 
 const app = express();
@@ -16,110 +15,38 @@ app.use(express.json({ limit: "32kb" }));
 const PORT = Number(process.env.PORT || 3000);
 const MAX_RUNTIME_MS = 180000;
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
+const YTDLP = path.join(__dirname, "yt-dlp");
+const FFMPEG = require("@ffmpeg-installer/ffmpeg").path;
 
-const ALLOWED_HOSTS = [
-  "youtube.com",
-  "youtu.be",
-  "youtube-nocookie.com",
-  "tiktok.com",
-  "instagram.com",
-  "facebook.com",
-  "fb.watch",
-  "vimeo.com",
-  "dailymotion.com"
-];
-
-function hostAllowed(host) {
-  host = host.toLowerCase().replace(/\.$/, "");
-  return ALLOWED_HOSTS.some(
-    domain => host === domain || host.endsWith("." + domain)
-  );
-}
-
-function isPrivateIPv4(ip) {
-  const p = ip.split(".").map(Number);
-
-  if (
-    p.length !== 4 ||
-    p.some(n => !Number.isInteger(n) || n < 0 || n > 255)
-  ) {
-    return true;
-  }
-
-  return (
-    p[0] === 10 ||
-    p[0] === 127 ||
-    p[0] === 0 ||
-    (p[0] === 169 && p[1] === 254) ||
-    (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
-    (p[0] === 192 && p[1] === 168) ||
-    (p[0] === 100 && p[1] >= 64 && p[1] <= 127) ||
-    p[0] >= 224
-  );
-}
-
-async function validateUrl(value) {
-  let u;
+function validateYouTube(value) {
+  let url;
 
   try {
-    u = new URL(value);
+    url = new URL(value);
   } catch {
     throw new Error("Tautan tidak valid.");
   }
 
-  if (!["http:", "https:"].includes(u.protocol)) {
-    throw new Error("Tautan harus menggunakan HTTP atau HTTPS.");
-  }
-
-  if (u.username || u.password) {
-    throw new Error("Tautan dengan kredensial ditolak.");
-  }
-
-  const host = u.hostname.toLowerCase().replace(/\.$/, "");
-
-  if (!hostAllowed(host)) {
-    throw new Error(
-      "Platform ini belum didukung atau format link salah."
-    );
-  }
+  const host = url.hostname.toLowerCase();
 
   if (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local")
+    !["youtube.com", "www.youtube.com", "m.youtube.com",
+      "youtu.be", "www.youtube-nocookie.com",
+      "youtube-nocookie.com"].includes(host)
   ) {
-    throw new Error("Alamat lokal tidak diizinkan.");
+    throw new Error("Masukkan tautan YouTube yang valid.");
   }
 
-  try {
-    const records = await dns.lookup(host, { all: true });
-
-    if (
-      records.some(record =>
-        record.family === 4
-          ? isPrivateIPv4(record.address)
-          : record.address === "::1" ||
-            record.address === "::" ||
-            /^(fc|fd|fe80:)/i.test(record.address)
-      )
-    ) {
-      throw new Error("Alamat jaringan privat ditolak.");
-    }
-  } catch (error) {
-    if (error.message.includes("ditolak")) throw error;
-
-    console.warn("DNS check bypass/warning:", error.message);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("Tautan harus HTTP atau HTTPS.");
   }
 
-  return u;
+  return url;
 }
 
 function runDownload(url, directory) {
   return new Promise((resolve, reject) => {
-    const outputTemplate = path.join(
-      directory,
-      "sarian.%(ext)s"
-    );
+    const output = path.join(directory, "sarian.%(ext)s");
 
     const args = [
       "--no-warnings",
@@ -128,257 +55,148 @@ function runDownload(url, directory) {
       "--no-progress",
       "--socket-timeout", "20",
       "--max-filesize", String(MAX_FILE_SIZE),
-      "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+      "--ffmpeg-location", FFMPEG,
+      "-f", "best[ext=mp4]/best",
       "--merge-output-format", "mp4",
-      "-o", outputTemplate,
+      "-o", output,
       url
     ];
 
     let stderr = "";
-    let settled = false;
-    let timedOut = false;
+    let finished = false;
 
-    const child = spawn("yt-dlp", args, {
+    const child = spawn(YTDLP, args, {
       stdio: ["ignore", "ignore", "pipe"]
     });
 
     const timer = setTimeout(() => {
-      timedOut = true;
       child.kill("SIGKILL");
     }, MAX_RUNTIME_MS);
 
-    function finish(error, file) {
-      if (settled) return;
-
-      settled = true;
+    function done(error, file) {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
-
-      if (error) reject(error);
-      else resolve(file);
+      error ? reject(error) : resolve(file);
     }
 
     child.stderr.on("data", chunk => {
-      stderr += chunk.toString();
-
-      if (stderr.length > 6000) {
-        stderr = stderr.slice(-6000);
-      }
+      stderr = (stderr + chunk.toString()).slice(-5000);
     });
 
     child.on("error", error => {
-      if (error.code === "ENOENT") {
-        finish(
-          new Error(
-            "ENGINE_NOT_FOUND: yt-dlp tidak terpasang di runtime server."
-          )
-        );
-      } else {
-        finish(
-          new Error(
-            "Gagal mengeksekusi downloader: " + error.message
-          )
-        );
-      }
+      done(new Error(
+        "yt-dlp gagal dijalankan: " + error.message
+      ));
     });
 
     child.on("close", async code => {
-      if (timedOut) {
-        return finish(
-          new Error("Waktu download habis (timeout server).")
-        );
-      }
-
       if (code !== 0) {
-        console.error("yt-dlp stderr:", stderr);
-
-        const detail = stderr.toLowerCase();
-
-        if (
-          detail.includes("ffmpeg") &&
-          (
-            detail.includes("not found") ||
-            detail.includes("not installed")
-          )
-        ) {
-          return finish(
-            new Error("FFmpeg belum terpasang di sistem container.")
-          );
-        }
-
-        if (
-          detail.includes("sign in") ||
-          detail.includes("login") ||
-          detail.includes("confirm you're not a bot")
-        ) {
-          return finish(
-            new Error(
-              "Video dibatasi login/bot-protection oleh platform."
-            )
-          );
-        }
-
-        return finish(
-          new Error(
-            "Ekstraksi gagal: " +
-            (stderr.split("\n")[0] || "Error tidak diketahui")
-          )
-        );
+        return done(new Error(
+          "Download gagal: " + (stderr.split("\n")[0] || "periksa log server")
+        ));
       }
 
       try {
         const files = await fsp.readdir(directory);
 
-        const candidates = files
-          .filter(name => /^sarian\./.test(name))
-          .map(name => path.join(directory, name));
+        for (const name of files) {
+          if (!name.startsWith("sarian.")) continue;
 
-        let selected = null;
-
-        for (const file of candidates) {
+          const file = path.join(directory, name);
           const stat = await fsp.stat(file);
 
           if (stat.isFile() && stat.size > 0) {
-            selected = file;
-            break;
+            return done(null, file);
           }
         }
 
-        if (!selected) {
-          return finish(
-            new Error(
-              "Proses selesai tetapi file video kosong/tidak ditemukan."
-            )
-          );
-        }
-
-        finish(null, selected);
-      } catch (err) {
-        finish(
-          new Error(
-            "Gagal membaca direktori unduhan: " + err.message
-          )
-        );
+        done(new Error("File hasil download tidak ditemukan."));
+      } catch (error) {
+        done(error);
       }
     });
   });
 }
 
-// Endpoint pemeriksaan yt-dlp dan FFmpeg
-app.get("/api/check-tools", (_req, res) => {
-  let ytdlpOk = false;
-  let ffmpegOk = false;
-
-  try {
-    execSync("yt-dlp --version");
-    ytdlpOk = true;
-  } catch {}
-
-  try {
-    execSync("ffmpeg -version");
-    ffmpegOk = true;
-  } catch {}
-
-  res.json({
-    ok: ytdlpOk && ffmpegOk,
-    tools: {
-      "yt-dlp": ytdlpOk
-        ? "TERPASANG"
-        : "TIDAK TERPASANG",
-      "ffmpeg": ffmpegOk
-        ? "TERPASANG"
-        : "TIDAK TERPASANG"
-    },
-    message: (!ytdlpOk || !ffmpegOk)
-      ? "Hosting kamu masih jalan di Node standar (mengabaikan Dockerfile)."
-      : "Lingkungan server siap digunakan!"
-  });
-});
-
 app.get("/", (_req, res) => {
-  const indexPath = path.join(__dirname, "index.html");
+  const index = path.join(__dirname, "index.html");
 
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.send(
-      "Backend SariAN aktif. Gunakan POST /api/download"
-    );
-  }
+  if (fs.existsSync(index)) return res.sendFile(index);
+
+  res.send("SariAN YouTube Downloader aktif.");
 });
 
 app.get("/health", (_req, res) => {
+  res.json({ ok: true, service: "sarian-backend" });
+});
+
+app.get("/api/check-tools", (_req, res) => {
+  let ytdlp = false;
+  let ffmpeg = false;
+  let version = "";
+
+  try {
+    version = execFileSync(YTDLP, ["--version"], {
+      encoding: "utf8",
+      timeout: 10000
+    }).trim();
+    ytdlp = true;
+  } catch {}
+
+  try {
+    execFileSync(FFMPEG, ["-version"], {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: "ignore"
+    });
+    ffmpeg = true;
+  } catch {}
+
   res.json({
-    ok: true,
-    service: "sarian-backend"
+    ok: ytdlp && ffmpeg,
+    tools: {
+      "yt-dlp": ytdlp ? version : "TIDAK TERSEDIA",
+      ffmpeg: ffmpeg ? "TERPASANG" : "TIDAK TERSEDIA"
+    }
   });
 });
 
 app.post("/api/download", async (req, res) => {
-  let directory = null;
+  let directory;
 
   try {
-    const input = req.body && req.body.url;
-
-    if (typeof input !== "string" || !input.trim()) {
-      return res.status(400).json({
-        error: "Masukkan tautan video terlebih dahulu."
-      });
+    if (!fs.existsSync(YTDLP)) {
+      throw new Error("yt-dlp belum terpasang. Periksa log deployment.");
     }
 
-    const url = await validateUrl(input.trim());
+    const input = req.body?.url;
 
-    directory = path.join(
-      os.tmpdir(),
-      "sarian-" + crypto.randomUUID()
-    );
+    if (typeof input !== "string" || !input.trim()) {
+      throw new Error("Masukkan tautan YouTube.");
+    }
 
+    const url = validateYouTube(input.trim());
+
+    directory = path.join(os.tmpdir(), "sarian-" + crypto.randomUUID());
     await fsp.mkdir(directory, { recursive: true });
 
-    console.log("Download request:", url.hostname);
-
     const file = await runDownload(url.toString(), directory);
-
-    if (res.destroyed) return;
-
     const stat = await fsp.stat(file);
 
-    res.setHeader(
-      "Content-Type",
-      file.toLowerCase().endsWith(".mp4")
-        ? "video/mp4"
-        : "application/octet-stream"
-    );
-
+    res.setHeader("Content-Type", "application/octet-stream");
     res.setHeader("Content-Length", String(stat.size));
-
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="sarian-video' +
-        path.extname(file) +
-        '"'
+      'attachment; filename="sarian-video' + path.extname(file) + '"'
     );
 
     const stream = fs.createReadStream(file);
 
-    stream.on("error", error => {
-      console.error("Kesalahan stream:", error.message);
+    stream.on("error", () => res.destroy());
 
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: "Gagal mengalirkan file hasil download."
-        });
-      } else {
-        res.destroy();
-      }
-    });
-
-    stream.on("close", async () => {
-      if (directory) {
-        await fsp.rm(
-          directory,
-          { recursive: true, force: true }
-        ).catch(() => {});
-      }
+    stream.on("close", () => {
+      fsp.rm(directory, { recursive: true, force: true }).catch(() => {});
     });
 
     res.on("close", () => {
@@ -386,32 +204,14 @@ app.post("/api/download", async (req, res) => {
     });
 
     stream.pipe(res);
-
   } catch (error) {
-    console.error("Download error:", error.message);
-
     if (!res.headersSent && !res.destroyed) {
-      res.status(400).json({
-        error: error.message || "Download gagal diproses."
-      });
+      res.status(400).json({ error: error.message });
     }
 
     if (directory) {
-      await fsp.rm(
-        directory,
-        { recursive: true, force: true }
-      ).catch(() => {});
+      await fsp.rm(directory, { recursive: true, force: true }).catch(() => {});
     }
-  }
-});
-
-app.use((error, _req, res, _next) => {
-  console.error("Server error:", error.message);
-
-  if (!res.headersSent) {
-    res.status(500).json({
-      error: "Terjadi kesalahan pada server."
-    });
   }
 });
 
