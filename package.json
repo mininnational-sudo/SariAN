@@ -5,6 +5,7 @@
   "description": "SariAN YouTube Downloader",
   "main": "server.js",
   "scripts": {
+    "postinstall": "node install-tools.js",
     "start": "node server.js"
   },
   "engines": {
