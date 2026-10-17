@@ -87,12 +87,9 @@ async function prepare(input) {
   return u;
 }
 
-app.get("/", (_req, res) => res.json({
-  service: "SariAN Backend",
-  status: "online",
-  endpoints: ["/health", "/api/analyze", "/api/download"],
-  note: "Unduh hanya media yang Anda miliki atau yang memang diizinkan untuk diunduh."
-}));
+app.get("/", (_req, res) => {
+  res.sendFile(require("node:path").join(__dirname, "index.html"));
+});
 app.get("/health", (_req, res) => res.json({ ok: true, service: "sarian-backend" }));
 
 app.post("/api/analyze", async (req, res) => {
