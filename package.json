@@ -2,7 +2,7 @@
   "name": "sarian-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "SariAN starter: direct media URL downloader and subtitle text utilities",
+  "description": "Backend API starter for SariAN media downloader",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "helmet": "^8.0.0"
   }
 }
